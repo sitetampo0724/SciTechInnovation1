@@ -5,18 +5,14 @@ RPLidar lidar;
 MecanumDriver mecanum(9, 8, 12, 13, 11, 10, 46, 21);
 float distances[360] = { 0 };
 
-// ================== SmartRotate 校正参数 ==================
 const float KP         = 75.0f;
-const float KD         = 350.0f;
+const float KD         = 200.0f;
 const float STEER_MAX  = 60.0f;
 const float BASE_SPEED = 100.0f;
 const float DEAD_ZONE  = 0.04f;
 
-int count=0;
-
 float prevError = 0.0f;
 
-// ================== 采样函数 ==================
 float weightedMean(float a[], int from, int to) {
     float sumW = 0, sumD = 0;
     for (int i = from; i <= to; i++) {
@@ -40,22 +36,19 @@ float getFrontDistance(float a[]) { return getAverageDist(a, 175, 185); }
 float getLeftDistance(float a[])  { return getAverageDist(a,  85,  95); }
 float getRightDistance(float a[]) { return getAverageDist(a, 265, 275); }
 
-// ================== 增强版 SmartRotate (PD控制) ==================
 void SmartRotate(float a[]) {
-    float leftDist  = weightedMean(a,  40, 140);
+    float leftDist  = weightedMean(a, 40, 140);
     float rightDist = weightedMean(a, 220, 320);
 
     float error = leftDist - rightDist;
     if (fabsf(error) < DEAD_ZONE) error = 0;
 
-    // 微分项：偏差收缩时产生反向阻尼，防止过冲
     float dError = error - prevError;
     prevError = error;
 
     float steer = error * KP + dError * KD;
     steer = constrain(steer, -STEER_MAX, STEER_MAX);
 
-    // 前向速度随偏差动态衰减
     float fwd = BASE_SPEED * (1.0f - fabsf(steer) / (STEER_MAX * 1.5f));
     fwd = constrain(fwd, 40.0f, BASE_SPEED);
 
@@ -65,16 +58,12 @@ void SmartRotate(float a[]) {
     mecanum.driveAllMotor(leftSpeed, rightSpeed, leftSpeed, rightSpeed);
 }
 
-// ================== 状态机 ==================
-enum RobotState { NORMAL, TURNING_LEFT, TURNING_RIGHT, TURN_PAUSE, TURNING_LEFT_Intersection, TURNING_RIGHT_Intersection };
+enum RobotState { NORMAL, TURNING_LEFT, TURNING_RIGHT, TURN_PAUSE };
 RobotState currentState = NORMAL;
 unsigned long stateStartTime = 0;
 
-// ================== 左右转弯独立时长参数 ==================
-const unsigned long TURN_DURATION_LEFT  = 745;   // 左转时长
-const unsigned long TURN_DURATION_RIGHT = 765;   // 右转时长
+const unsigned long TURN_DURATION  = 800;
 const unsigned long PAUSE_DURATION = 500;
-const unsigned long TURN_DURATION_Intersection = 615;
 
 void setup() {
     Serial.begin(115200);
@@ -91,9 +80,8 @@ void loop() {
 
         if (angle >= 0 && angle < 360)
             distances[angle] = distance;
-        
+
         if (startBit) {
-            
             float frontDist = getFrontDistance(distances);
             float leftDist  = getLeftDistance(distances);
             float rightDist = getRightDistance(distances);
@@ -101,38 +89,21 @@ void loop() {
             switch (currentState) {
                 case NORMAL:
                     SmartRotate(distances);
-                    if(count==3&&leftDist>0.5f)
-                    {
-                        currentState = TURNING_LEFT_Intersection;
-                        stateStartTime = millis();
-                        mecanum.driveAllMotor(-60, 100, -60, 100);
-                        count+=1;
-                    }
-                    if(count==7&&rightDist>0.5f)
-                    {
-                        currentState = TURNING_RIGHT_Intersection;
-                        stateStartTime = millis();
-                        mecanum.driveAllMotor(100, -60, 100, -60);
-                        count=0;
-                    }
-                    if (frontDist < 0.75f) {
-                       
-                        if (count%7<=3 && leftDist > 0.7f) {
+                    if (frontDist < 0.7f) {
+                        if (leftDist - rightDist > 1.0f) {
                             currentState = TURNING_LEFT;
                             stateStartTime = millis();
-                            mecanum.driveAllMotor(-50, 120, -50, 120);
-                            count+=1;
-                        } else if (count%7>=4&&rightDist > 0.8f) {
-                            currentState = TURNING_RIGHT_Intersection;
+                            mecanum.driveAllMotor(-50, 100, -50, 100);
+                        } else if (rightDist - leftDist > 1.0f) {
+                            currentState = TURNING_RIGHT;
                             stateStartTime = millis();
                             mecanum.driveAllMotor(100, -50, 100, -50);
-                            count+=1;
                         }
                     }
                     break;
 
                 case TURNING_LEFT:
-                    if (millis() - stateStartTime >= TURN_DURATION_LEFT) {
+                    if (millis() - stateStartTime >= TURN_DURATION) {
                         currentState = TURN_PAUSE;
                         stateStartTime = millis();
                         mecanum.driveAllMotor(100, 100, 100, 100);
@@ -140,23 +111,7 @@ void loop() {
                     break;
 
                 case TURNING_RIGHT:
-                    if (millis() - stateStartTime >= TURN_DURATION_RIGHT) {
-                        currentState = TURN_PAUSE;
-                        stateStartTime = millis();
-                        mecanum.driveAllMotor(100, 100, 100, 100);
-                    }
-                    break;
-
-                case TURNING_LEFT_Intersection:
-                    if (millis() - stateStartTime >= TURN_DURATION_Intersection) {
-                        currentState = TURN_PAUSE;
-                        stateStartTime = millis();
-                        mecanum.driveAllMotor(100, 100, 100, 100);
-                    }
-                    break;
-
-                case TURNING_RIGHT_Intersection:
-                    if (millis() - stateStartTime >= TURN_DURATION_Intersection) {
+                    if (millis() - stateStartTime >= TURN_DURATION) {
                         currentState = TURN_PAUSE;
                         stateStartTime = millis();
                         mecanum.driveAllMotor(100, 100, 100, 100);
@@ -165,7 +120,7 @@ void loop() {
 
                 case TURN_PAUSE:
                     if (millis() - stateStartTime >= PAUSE_DURATION) {
-                        prevError = 0.0f;  // 清除转弯残留微分
+                        prevError = 0.0f; 
                         currentState = NORMAL;
                     }
                     break;
